@@ -2,3 +2,7 @@ Packages/
 Library/
 *.log
 Temp/
+.vscode/settings.json
+obj/
+*.csproj
+*.sln
