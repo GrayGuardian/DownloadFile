@@ -79,15 +79,20 @@ public class DownloadFile
     {
         _isDownload = true;
 
-        long csize = 0;
-        int ocnt = 0;
+        long csize = 0; //已下载大小
+        int ocnt = 0;   //完成线程数
 
         // 准备工作
         var tempFilePaths = new string[threadCount];
         var tempFileFileStreams = new FileStream[threadCount];
-
         var dirPath = Path.GetDirectoryName(filePath);
         var fileName = Path.GetFileName(filePath);
+        // 下载根目录不存在则创建
+        if (!Directory.Exists(dirPath))
+        {
+            Directory.CreateDirectory(dirPath);
+        }
+        // 查看下载临时文件是否可以继续断点续传
         var fileInfos = new DirectoryInfo(dirPath).GetFiles(fileName + "*.temp");
         if (fileInfos.Length != threadCount)
         {
@@ -97,6 +102,7 @@ public class DownloadFile
                 info.Delete();
             }
         }
+        // 创建下载临时文件，并创建文件流
         for (int i = 0; i < threadCount; i++)
         {
             tempFilePaths[i] = filePath + i + ".temp";
@@ -109,24 +115,32 @@ public class DownloadFile
 
             csize += tempFileFileStreams[i].Length;
         }
-
+        // 下载逻辑
         GetFileSizeAsyn((size) =>
         {
+            // 单线程下载过程回调函数
             Action<int, long, byte[], byte[]> t_onDownloading = (index, rsize, rbytes, data) =>
             {
                 csize += rsize;
                 tempFileFileStreams[index].Write(rbytes, 0, (int)rsize);
                 PostMainThreadAction<long, long>(onDownloading, csize, size);
             };
+            // 单线程下载完毕回调函数
             Action<int, byte[]> t_onTrigger = (index, data) =>
             {
+                // 关闭文件流
                 tempFileFileStreams[index].Close();
                 ocnt++;
                 if (ocnt >= threadCount)
                 {
+                    // 将临时文件转为下载文件
                     if (!File.Exists(filePath))
                     {
                         File.Create(filePath).Dispose();
+                    }
+                    else
+                    {
+                        File.WriteAllBytes(filePath, new byte[] { });
                     }
                     FileStream fs = File.OpenWrite(filePath);
                     fs.Seek(fs.Length, System.IO.SeekOrigin.Current);
@@ -140,6 +154,7 @@ public class DownloadFile
                     PostMainThreadAction<byte[]>(onTrigger, File.ReadAllBytes(filePath));
                 }
             };
+            // 分割文件尺寸，多线程下载
             long[] sizes = SplitFileSize(size, threadCount);
             for (int i = 0; i < sizes.Length; i = i + 2)
             {
@@ -153,6 +168,7 @@ public class DownloadFile
                     t_onTrigger(i / 2, null);
                     continue;
                 }
+
                 _threadDownload(i / 2, from, to, t_onDownloading, t_onTrigger);
             }
         });
@@ -167,21 +183,23 @@ public class DownloadFile
     {
         _isDownload = true;
 
-        long csize = 0;
-        int ocnt = 0;
-
+        long csize = 0; // 已下载大小
+        int ocnt = 0;   // 完成线程数
+        byte[] cdata;  // 已下载数据
+        // 下载逻辑
         GetFileSizeAsyn((size) =>
         {
-            byte[] cdata = new byte[size];
+            cdata = new byte[size];
+            // 单线程下载过程回调函数
             Action<int, long, byte[], byte[]> t_onDownloading = (index, rsize, rbytes, data) =>
             {
                 csize += rsize;
                 PostMainThreadAction<long, long>(onDownloading, csize, size);
             };
+            // 单线程下载完毕回调函数
             Action<int, byte[]> t_onTrigger = (index, data) =>
             {
                 long dIndex = (long)Math.Ceiling((double)(size * index / threadCount));
-
                 Array.Copy(data, 0, cdata, dIndex, data.Length);
 
                 ocnt++;
@@ -190,6 +208,7 @@ public class DownloadFile
                     PostMainThreadAction<byte[]>(onTrigger, cdata);
                 }
             };
+            // 分割文件尺寸，多线程下载
             long[] sizes = SplitFileSize(size, threadCount);
             for (int i = 0; i < sizes.Length; i = i + 2)
             {
