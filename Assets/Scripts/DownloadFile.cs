@@ -16,6 +16,10 @@ public class DownloadFile
     /// </summary>
     public string Url;
 
+    public event Action<Exception> OnError;
+
+    private static object errorlock = new object();
+
     /// <summary>
     /// 主要用于关闭线程
     /// </summary>
@@ -50,9 +54,11 @@ public class DownloadFile
 
             return contentLength;
         }
-        catch (Exception)
+        catch (Exception ex)
         {
-            throw;
+            onError(ex);
+            // throw;
+            return -1;
         }
     }
     /// <summary>
@@ -82,42 +88,44 @@ public class DownloadFile
         long csize = 0; //已下载大小
         int ocnt = 0;   //完成线程数
 
-        // 准备工作
-        var tempFilePaths = new string[threadCount];
-        var tempFileFileStreams = new FileStream[threadCount];
-        var dirPath = Path.GetDirectoryName(filePath);
-        var fileName = Path.GetFileName(filePath);
-        // 下载根目录不存在则创建
-        if (!Directory.Exists(dirPath))
-        {
-            Directory.CreateDirectory(dirPath);
-        }
-        // 查看下载临时文件是否可以继续断点续传
-        var fileInfos = new DirectoryInfo(dirPath).GetFiles(fileName + "*.temp");
-        if (fileInfos.Length != threadCount)
-        {
-            // 下载临时文件数量不相同，则清理
-            foreach (var info in fileInfos)
-            {
-                info.Delete();
-            }
-        }
-        // 创建下载临时文件，并创建文件流
-        for (int i = 0; i < threadCount; i++)
-        {
-            tempFilePaths[i] = filePath + i + ".temp";
-            if (!File.Exists(tempFilePaths[i]))
-            {
-                File.Create(tempFilePaths[i]).Dispose();
-            }
-            tempFileFileStreams[i] = File.OpenWrite(tempFilePaths[i]);
-            tempFileFileStreams[i].Seek(tempFileFileStreams[i].Length, System.IO.SeekOrigin.Current);
 
-            csize += tempFileFileStreams[i].Length;
-        }
         // 下载逻辑
         GetFileSizeAsyn((size) =>
         {
+            if (size == -1) return;
+            // 准备工作
+            var tempFilePaths = new string[threadCount];
+            var tempFileFileStreams = new FileStream[threadCount];
+            var dirPath = Path.GetDirectoryName(filePath);
+            var fileName = Path.GetFileName(filePath);
+            // 下载根目录不存在则创建
+            if (!Directory.Exists(dirPath))
+            {
+                Directory.CreateDirectory(dirPath);
+            }
+            // 查看下载临时文件是否可以继续断点续传
+            var fileInfos = new DirectoryInfo(dirPath).GetFiles(fileName + "*.temp");
+            if (fileInfos.Length != threadCount)
+            {
+                // 下载临时文件数量不相同，则清理
+                foreach (var info in fileInfos)
+                {
+                    info.Delete();
+                }
+            }
+            // 创建下载临时文件，并创建文件流
+            for (int i = 0; i < threadCount; i++)
+            {
+                tempFilePaths[i] = filePath + i + ".temp";
+                if (!File.Exists(tempFilePaths[i]))
+                {
+                    File.Create(tempFilePaths[i]).Dispose();
+                }
+                tempFileFileStreams[i] = File.OpenWrite(tempFilePaths[i]);
+                tempFileFileStreams[i].Seek(tempFileFileStreams[i].Length, System.IO.SeekOrigin.Current);
+
+                csize += tempFileFileStreams[i].Length;
+            }
             // 单线程下载过程回调函数
             Action<int, long, byte[], byte[]> t_onDownloading = (index, rsize, rbytes, data) =>
             {
@@ -230,29 +238,52 @@ public class DownloadFile
     {
         Thread thread = new Thread(new ThreadStart(() =>
         {
-            var request = (HttpWebRequest)HttpWebRequest.Create(new Uri(Url));
-            request.AddRange(from, to);
-
-            HttpWebResponse response = (HttpWebResponse)request.GetResponse();
-            Stream ns = response.GetResponseStream();
-
-            byte[] rbytes = new byte[8 * 1024];
-            int rSize = 0;
-            MemoryStream ms = new MemoryStream();
-            while (true)
+            try
             {
-                if (!_isDownload) return;
-                rSize = ns.Read(rbytes, 0, rbytes.Length);
+                var request = (HttpWebRequest)HttpWebRequest.Create(new Uri(Url));
+                request.AddRange(from, to);
 
-                if (rSize <= 0) break;
-                ms.Write(rbytes, 0, rSize);
-                if (onDownloading != null) onDownloading(index, rSize, rbytes, ms.ToArray());
+                HttpWebResponse response = (HttpWebResponse)request.GetResponse();
+                Stream ns = response.GetResponseStream();
+
+                byte[] rbytes = new byte[8 * 1024];
+                int rSize = 0;
+                MemoryStream ms = new MemoryStream();
+                while (true)
+                {
+                    if (!_isDownload) return;
+                    rSize = ns.Read(rbytes, 0, rbytes.Length);
+                    if (rSize <= 0) break;
+                    ms.Write(rbytes, 0, rSize);
+                    if (onDownloading != null) onDownloading(index, rSize, rbytes, ms.ToArray());
+                }
+
+                ns.Close();
+                response.Close();
+                request.Abort();
+
+                if (ms.Length == (to - from) + 1)
+                {
+                    if (onTrigger != null) onTrigger(index, ms.ToArray());
+                }
+                else
+                {
+                    lock (errorlock)
+                    {
+                        if (_isDownload)
+                        {
+                            onError(new Exception("文件大小校验不通过"));
+                        }
+                    }
+                }
+
             }
-            ns.Close();
-            response.Close();
-            request.Abort();
+            catch (Exception ex)
+            {
+                onError(ex);
+            }
 
-            if (onTrigger != null) onTrigger(index, ms.ToArray());
+
         }));
         thread.Start();
     }
@@ -280,6 +311,11 @@ public class DownloadFile
         return result;
     }
 
+    private void onError(Exception ex)
+    {
+        Close();
+        PostMainThreadAction<Exception>(OnError, ex);
+    }
 
     /// <summary>
     /// 通知主线程回调

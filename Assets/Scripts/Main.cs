@@ -12,9 +12,15 @@ public class Main : MonoBehaviour
         var savePath = System.IO.Path.Combine(Application.dataPath, "../SaveFiles");
         string filePath;
         // var url = "https://dlc2.pconline.com.cn/filedown_1117483_12749837/gFETfFfp/pconline1552198052014.zip";
-        var url = "https://down.sandai.net/thunder11/XunLeiWebSetup11.2.4.1750dl.exe";
+        // var url = "https://down.sandai.net/thunder11/XunLeiWebSetup11.2.4.1750dl.exe";
+        var url = "http://127.0.0.1/Download/111.exe";
 
         _downloadFile = new DownloadFile(url);
+
+        _downloadFile.OnError += (ex) =>
+        {
+            UnityEngine.Debug.Log("捕获异常 >>> " + ex);
+        };
 
 
         // 多线程下载文件至内存 无法断点续传
